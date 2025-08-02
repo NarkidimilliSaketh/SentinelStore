@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "secrets.js": "^0.1.8"
+  }
+}
