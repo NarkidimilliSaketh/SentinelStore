@@ -1,5 +1,3 @@
-// src/components/admin/AdminDashboard.tsx
-
 import { useState, useEffect } from 'react';
 import StatCard from './StatCard';
 import UserManagement from './UserManagement';
@@ -39,7 +37,7 @@ export default function AdminDashboard({ token, username, onLogout }: AdminDashb
       }
     };
     fetchAdminData();
-    const intervalId = setInterval(fetchAdminData, 10000); // Refresh stats every 10s
+    const intervalId = setInterval(fetchAdminData, 10000);
     return () => clearInterval(intervalId);
   }, [token]);
 
@@ -53,7 +51,7 @@ export default function AdminDashboard({ token, username, onLogout }: AdminDashb
       });
       const data = await res.json();
       console.log("GC Results:", data);
-      alert("Garbage collection cycle completed. Check console for details.");
+      alert("Garbage collection cycle completed. Check console and node health panel for results.");
     } catch (error) {
       alert(`Error triggering GC: ${error}`);
     } finally {
@@ -88,7 +86,7 @@ export default function AdminDashboard({ token, username, onLogout }: AdminDashb
           <StatCard title="Total Files Stored" value={stats?.total_files ?? '...'} icon={<FaFileAlt />} />
         </div>
       </div>
-
+      
       <div className="card">
         <h2>🌐 P2P Network Health</h2>
         <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1rem'}}>
@@ -120,7 +118,7 @@ export default function AdminDashboard({ token, username, onLogout }: AdminDashb
                 <Pie data={pieChartData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label>
                   {pieChartData.map((_entry, index) => <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />)}
                 </Pie>
-                <Tooltip />
+                <Tooltip wrapperStyle={{backgroundColor: '#333'}} />
                 <Legend />
               </PieChart>
             </ResponsiveContainer>

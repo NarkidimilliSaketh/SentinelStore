@@ -19,7 +19,7 @@
     "react-router-dom": "^7.7.1",
     "recharts": "^3.1.0",
     "secrets-js": "^0.9.2",
-    "secrets.js": "^0.1.8",
+    "shamirs-secret-sharing": "^2.0.1",
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {

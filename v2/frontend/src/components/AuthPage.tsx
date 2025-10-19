@@ -25,7 +25,7 @@ export default function AuthPage({ onLoginSuccess }: AuthPageProps) {
     
     try {
       if (isLogin) {
-        // --- Seamless Login and Key Decryption Flow ---
+        // --- Login Flow (Unchanged) ---
         setMessage('Authenticating...');
         const formData = new URLSearchParams();
         formData.append('username', username);
@@ -42,15 +42,13 @@ export default function AuthPage({ onLoginSuccess }: AuthPageProps) {
         const token = loginData.access_token;
         setMessage('Authentication successful. Decrypting session keys...');
 
-        // Now, fetch the user's keys using the new token
         const meResponse = await fetch(`${METADATA_API_URL}/me`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         const meData = await meResponse.json();
         if (!meResponse.ok) throw new Error(meData.detail || "Could not fetch user keys.");
 
-        // Decrypt the private key using the password we already have in state
-        const salt = new Uint8Array(16).fill(1); // Must match the salt used at registration
+        const salt = new Uint8Array(16).fill(1);
         const passwordKey = await deriveKeyFromPassword(password, salt);
         const [nonceB64, encryptedSkB64] = meData.encrypted_private_key.split(':');
         const decryptedSk = decryptSymmetric(base64ToUint8Array(encryptedSkB64), base64ToUint8Array(nonceB64), passwordKey);
@@ -62,16 +60,15 @@ export default function AuthPage({ onLoginSuccess }: AuthPageProps) {
           secretKey: decryptedSk
         };
 
-        // Pass the token AND the decrypted keys up to the App component
         onLoginSuccess(token, keys);
 
       } else {
-        // --- Registration Flow ---
+        // --- Registration Flow (Unchanged) ---
         setMessage('Generating cryptographic keys...');
         const keyPair = generateKeyPair();
         
         setMessage('Encrypting your private key with your password...');
-        const salt = new Uint8Array(16).fill(1); // Use a consistent salt for private key encryption
+        const salt = new Uint8Array(16).fill(1);
         const passwordKey = await deriveKeyFromPassword(password, salt);
         const { ciphertext: encryptedPrivateKey, nonce } = encryptSymmetric(keyPair.secretKey, passwordKey);
 
@@ -79,7 +76,6 @@ export default function AuthPage({ onLoginSuccess }: AuthPageProps) {
           username,
           password,
           public_key: uint8ArrayToBase64(keyPair.publicKey),
-          // We store the nonce with the key, separated by a colon, to decrypt it later
           encrypted_private_key: `${uint8ArrayToBase64(nonce)}:${uint8ArrayToBase64(encryptedPrivateKey)}`
         };
 
@@ -107,11 +103,15 @@ export default function AuthPage({ onLoginSuccess }: AuthPageProps) {
       <form onSubmit={handleSubmit}>
         <div className="input-group">
           <label htmlFor="username">Username</label>
-          <input id="username" type="text" value={username} onChange={(e) => setUsername(e.target.value)} required />
+          {/* --- START OF MODIFICATION --- */}
+          <input id="username" type="text" value={username} onChange={(e) => setUsername(e.target.value)} required minLength={3} />
+          {/* --- END OF MODIFICATION --- */}
         </div>
         <div className="input-group">
           <label htmlFor="password">Password</label>
-          <input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          {/* --- START OF MODIFICATION --- */}
+          <input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} />
+          {/* --- END OF MODIFICATION --- */}
         </div>
         <button type="submit" disabled={isProcessing}>{isProcessing ? 'Processing...' : (isLogin ? 'Login' : 'Register')}</button>
       </form>

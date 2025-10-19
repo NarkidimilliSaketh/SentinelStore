@@ -1,0 +1,9 @@
+{
+  "name": "reshard-helper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node.js helper to combine shares with browser-compatible logic.",
+  "dependencies": {
+    "shamirs-secret-sharing": "^1.0.1"
+  }
+}

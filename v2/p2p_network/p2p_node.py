@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from kademlia.network import Server
 
-# --- Configuration ---
+# --- Configuration (Unchanged) ---
 NODE_PORT = int(os.getenv("NODE_PORT", 8468))
 API_PORT = int(os.getenv("API_PORT", 8001))
 BOOTSTRAP_IP = os.getenv("BOOTSTRAP_IP", None)
@@ -32,6 +32,10 @@ def run_kademlia_loop(loop, server, bootstrap_node):
         print(f"Kademlia node running in background thread with ID: {server.node.id.hex()}")
         if bootstrap_node:
             print(f"Attempting to bootstrap to {bootstrap_node}...")
+            # --- START OF MODIFICATION 1 ---
+            # Give the network a moment to settle before bootstrapping
+            await asyncio.sleep(5) 
+            # --- END OF MODIFICATION 1 ---
             neighbors = await server.bootstrap([bootstrap_node])
             if neighbors:
                 print(f"Bootstrap successful. Found {len(neighbors)} neighbors.")
@@ -51,7 +55,10 @@ async def lifespan(app: FastAPI):
     kademlia_thread = threading.Thread(target=run_kademlia_loop, args=(kademlia_loop, kademlia_server, bootstrap_node), daemon=True)
     kademlia_thread.start()
     
-    await asyncio.sleep(5)
+    # --- START OF MODIFICATION 2 ---
+    # Increase sleep time to allow the Kademlia thread to fully initialize and bootstrap
+    await asyncio.sleep(10) 
+    # --- END OF MODIFICATION 2 ---
     
     async def re_announce_data():
         print("Scanning local storage to re-announce data...")
@@ -87,6 +94,7 @@ async def lifespan(app: FastAPI):
     kademlia_loop.call_soon_threadsafe(kademlia_loop.stop)
     print("Shutdown complete.")
 
+# ... (rest of the file is unchanged) ...
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,

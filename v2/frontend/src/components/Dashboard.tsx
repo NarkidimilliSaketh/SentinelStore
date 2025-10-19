@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import FileDetailsModal from './FileDetailsModal';
 import {
-  //initializeModules,
-  //deriveKeyFromPassword,
   generateSymmetricKey,
   encryptSymmetric,
   decryptSymmetric,
@@ -56,6 +54,11 @@ export default function Dashboard({ token, username, keys, onLogout }: Dashboard
   const [myFilesSearch, setMyFilesSearch] = useState('');
   const [sharedFilesSearch, setSharedFilesSearch] = useState('');
   const [sortConfig, setSortConfig] = useState<{ key: SortKey; direction: SortDirection }>({ key: 'createdAt', direction: 'descending' });
+  
+  // --- START OF MODIFICATION 1: Add state for progress tracking ---
+  const [progress, setProgress] = useState(0);
+  const [progressMessage, setProgressMessage] = useState('');
+  // --- END OF MODIFICATION 1 ---
 
   const log = (message: string) => setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${message}`, ...prev]);
 
@@ -113,13 +116,20 @@ export default function Dashboard({ token, username, keys, onLogout }: Dashboard
     if (!password) return;
 
     setIsProcessing(true);
+    // --- START OF MODIFICATION 2: Reset progress state before upload ---
+    setProgress(0);
+    setProgressMessage('');
+    // --- END OF MODIFICATION 2 ---
     setLogs([]);
     log(`Starting bulk upload of ${filesToUpload.length} file(s)...`);
     
     for (let i = 0; i < filesToUpload.length; i++) {
       const file = filesToUpload[i];
-      log(`\n--- Uploading file ${i + 1} of ${filesToUpload.length}: "${file.name}" ---`);
+      const currentFileProgress = `(${i + 1}/${filesToUpload.length})`;
+      log(`\n--- Uploading file ${currentFileProgress}: "${file.name}" ---`);
+      
       try {
+        setProgressMessage(`Encrypting ${file.name}...`);
         log('1. Generating file key...');
         const fileKey = generateSymmetricKey();
         
@@ -129,27 +139,39 @@ export default function Dashboard({ token, username, keys, onLogout }: Dashboard
         const { ciphertext, nonce } = encryptSymmetric(fileData, fileKey);
 
         const { n, k } = getShamirParams(importance);
+        setProgressMessage(`Splitting ${file.name} into shares...`);
         log(`3. Applying Shamir's Sharing (n=${n}, k=${k})...`);
         const allShares = createShares(ciphertext, n, k);
 
+        setProgressMessage(`Uploading shares for ${file.name}...`);
         log('4. Uploading shares to P2P network...');
-        const shareHashes: string[] = [];
-        for (const share of allShares) {
-          const hash = await hashData(share);
-          shareHashes.push(hash);
-          const nodeUrl = getRandomNodeUrl();
-          await fetch(`${nodeUrl}/p2p/store`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ key: hash, value: uint8ArrayToBase64(share) })
-          });
-        }
+        
+        // --- START OF MODIFICATION 3: Parallelize share uploads ---
+                const uploadPromises = allShares.map(async (share) => {
+                  const hash = await hashData(share);
+                  // Note: We collect hashes here, but order doesn't strictly matter for the manifest
+                  const nodeUrl = getRandomNodeUrl();
+                  const response = await fetch(`${nodeUrl}/p2p/store`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key: hash, value: uint8ArrayToBase64(share) })
+                  });
+                  if (!response.ok) {
+                    throw new Error(`Failed to upload share ${hash.substring(0, 6)}...`);
+                  }
+                  // We return the hash so Promise.all collects them
+                  return hash;
+                });
+        
+                // Execute all upload promises in parallel and collect the resulting hashes
+                const resolvedHashes = await Promise.all(uploadPromises);
+                // --- END OF MODIFICATION 3 ---
 
         log('5. Encrypting file key for owner...');
         const encryptedFileKey = encryptAsymmetric(fileKey, keys.publicKey);
 
         log('6. Creating and uploading manifest...');
-        const manifest = { name: file.name, type: file.type, erasure: { n, k }, shards: shareHashes, crypto: { nonce: uint8ArrayToBase64(nonce) } };
+        const manifest = { name: file.name, type: file.type, erasure: { n, k }, shards: resolvedHashes, crypto: { nonce: uint8ArrayToBase64(nonce),ciphertextLength: ciphertext.length } };
         const manifestData = new TextEncoder().encode(JSON.stringify(manifest));
         const finalRootHash = await hashData(manifestData);
         const nodeUrl = getRandomNodeUrl();
@@ -171,16 +193,27 @@ export default function Dashboard({ token, username, keys, onLogout }: Dashboard
           })
         });
         log(`✅ Successfully uploaded "${file.name}".`);
+
+        // --- START OF MODIFICATION 4: Update overall progress ---
+        setProgress(((i + 1) / filesToUpload.length) * 100);
+        // --- END OF MODIFICATION 4 ---
+
       } catch (error) {
         log(`❌ An error occurred while uploading "${file.name}": ${error}`);
+        setProgressMessage(`Error on ${file.name}. Aborting.`);
         break; 
       }
     }
     log(`\n🎉 BULK UPLOAD COMPLETE!`);
     fetchUserFiles();
     setIsProcessing(false);
+    // --- START OF MODIFICATION 5: Reset progress on completion/error ---
+    setProgress(0);
+    setProgressMessage('');
+    // --- END OF MODIFICATION 5 ---
   };
 
+  // ... (all other handler functions like handleMultiDownload, handleShare, etc. remain unchanged) ...
   const handleMultiDownload = async () => {
     if (selectedFileIds.size === 0 || !keys) return;
     
@@ -256,7 +289,7 @@ export default function Dashboard({ token, username, keys, onLogout }: Dashboard
     setSelectedFileIds(new Set());
     setIsProcessing(false);
   };
-  // --- RESTORED: Single-file download logic ---
+  
   const handleDownload = async (file: any) => {
     if (!keys) return;
     setIsProcessing(true);
@@ -450,7 +483,6 @@ export default function Dashboard({ token, username, keys, onLogout }: Dashboard
     }
   };
   
-    // --- CORRECTED: Single-file unshare logic ---
   const handleUnshare = async (usernameToUnshare: string) => {
     if (!selectedFileDetails) return;
     log(`Attempting to unshare "${selectedFileDetails.filename}" from ${usernameToUnshare}...`);
@@ -466,7 +498,6 @@ export default function Dashboard({ token, username, keys, onLogout }: Dashboard
       }
       alert(`Successfully unshared with ${usernameToUnshare}`);
       log(`✅ Successfully unshared "${selectedFileDetails.filename}" from ${usernameToUnshare}.`);
-      // Refresh the details modal to show the change
       handleDetails(selectedFileDetails._id);
     } catch (error: any) {
       log(`❌ Error unsharing file: ${error.message}`);
@@ -474,41 +505,37 @@ export default function Dashboard({ token, username, keys, onLogout }: Dashboard
     }
   };
 
-  // --- CORRECTED: Multi-unshare logic ---
-const handleMultiUnshare = async () => {
-  if (selectedFileIds.size === 0) return;
-  const usernameToUnshare = prompt(`Enter the username to unshare ${selectedFileIds.size} file(s) from:`);
-  if (!usernameToUnshare) return;
+  const handleMultiUnshare = async () => {
+    if (selectedFileIds.size === 0) return;
+    const usernameToUnshare = prompt(`Enter the username to unshare ${selectedFileIds.size} file(s) from:`);
+    if (!usernameToUnshare) return;
 
-  setIsProcessing(true);
-  setLogs([]);
-  log(`Attempting to unshare ${selectedFileIds.size} file(s) from ${usernameToUnshare}...`);
-  try {
-    // Call the correct bulk endpoint
-    const response = await fetch(`${METADATA_API_URL}/files/unshare-bulk`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ 
-        file_ids: Array.from(selectedFileIds),
-        username: usernameToUnshare 
-      })
-    });
-    if (!response.ok) {
-      const errData = await response.json();
-      throw new Error(errData.detail || 'Failed to unshare files.');
+    setIsProcessing(true);
+    setLogs([]);
+    log(`Attempting to unshare ${selectedFileIds.size} file(s) from ${usernameToUnshare}...`);
+    try {
+      const response = await fetch(`${METADATA_API_URL}/files/unshare-bulk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ 
+          file_ids: Array.from(selectedFileIds),
+          username: usernameToUnshare 
+        })
+      });
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.detail || 'Failed to unshare files.');
+      }
+      log(`✅ Successfully unshared files from ${usernameToUnshare}.`);
+      alert(`Successfully unshared files from ${usernameToUnshare}.`);
+    } catch (error: any) {
+      log(`❌ Error unsharing files: ${error.message}`);
+      alert(`Error: ${error.message}`);
+    } finally {
+      setSelectedFileIds(new Set());
+      setIsProcessing(false);
     }
-    log(`✅ Successfully unshared files from ${usernameToUnshare}.`);
-    alert(`Successfully unshared files from ${usernameToUnshare}.`);
-    // We don't need to refresh file lists here, as the ownership hasn't changed, only permissions
-    // which are visible in the details modal.
-  } catch (error: any) {
-    log(`❌ Error unsharing files: ${error.message}`);
-    alert(`Error: ${error.message}`);
-  } finally {
-    setSelectedFileIds(new Set());
-    setIsProcessing(false);
-  }
-};
+  };
 
   const handleDetails = async (fileId: string) => {
     setIsProcessing(true);
@@ -527,7 +554,6 @@ const handleMultiUnshare = async () => {
     }
   };
 
-  
   const handleFileSelect = (fileId: string) => {
     setSelectedFileIds(prevSelected => {
       const newSelected = new Set(prevSelected);
@@ -618,7 +644,23 @@ const handleMultiUnshare = async () => {
             ))}
           </div>
         </div>
-        <button onClick={handleMultiUpload} disabled={isProcessing || !filesToUpload}>{isProcessing ? 'Processing...' : 'Upload File(s)'}</button>
+        {/* --- START OF MODIFICATION 6: Update button text and add progress bar --- */}
+        <button onClick={handleMultiUpload} disabled={isProcessing || !filesToUpload}>
+          {isProcessing ? `Processing... ${progressMessage} (${Math.round(progress)}%)` : 'Upload File(s)'}
+        </button>
+        {isProcessing && (
+          <div style={{ marginTop: '1rem' }}>
+            <div style={{ marginBottom: '0.5rem', fontSize: '0.9em', color: '#888' }}>
+              Overall Progress:
+            </div>
+            <div style={{ backgroundColor: '#1a1a1a', borderRadius: '8px', overflow: 'hidden', border: '1px solid #444' }}>
+              <div style={{ width: `${progress}%`, backgroundColor: '#646cff', padding: '4px', transition: 'width 0.3s ease-in-out', textAlign: 'center', color: 'white', fontSize: '0.8em' }}>
+                {Math.round(progress)}%
+              </div>
+            </div>
+          </div>
+        )}
+        {/* --- END OF MODIFICATION 6 --- */}
       </div>
 
       <div className="card">

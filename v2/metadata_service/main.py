@@ -9,7 +9,6 @@ from bson import ObjectId
 from typing import List
 import httpx
 
-
 from database import user_collection, file_collection, access_control_collection, logs_collection
 from models import (
     UserRegisterSchema, FileCreateSchema, FileResponseSchema, 
@@ -21,6 +20,8 @@ from auth import (
     get_password_hash, verify_password, create_access_token, 
     get_current_user, get_current_admin_user
 )
+# CORRECTED: Import the function with the correct name
+from worker import re_shard_file
 
 app = FastAPI()
 
@@ -263,6 +264,32 @@ async def share_file(request: Request, file_id: str, share_request: ShareRequest
     await create_log_entry(request, current_user, "SHARE_FILE", "SUCCESS", {"file_id": file_id, "filename": file_to_share["filename"], "shared_with": share_request.share_with_username})
     return {"message": f"File successfully shared with {share_request.share_with_username}"}
 
+@app.post("/files/{file_id}/unshare", status_code=status.HTTP_204_NO_CONTENT)
+async def unshare_file(request: Request, file_id: str, share_info: dict, current_user: str = Depends(get_current_user)):
+    user_to_unshare = share_info.get("username")
+    if not user_to_unshare:
+        raise HTTPException(status_code=400, detail="Username to unshare is required")
+
+    try:
+        obj_id = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file ID format")
+
+    file_doc = await file_collection.find_one({"_id": obj_id})
+    if not file_doc or file_doc["owner"] != current_user:
+        raise HTTPException(status_code=403, detail="Only the owner can unshare this file")
+
+    result = await access_control_collection.delete_one({
+        "file_id": file_id,
+        "shared_with_user": user_to_unshare
+    })
+
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Sharing entry not found")
+
+    await create_log_entry(request, current_user, "UNSHARE_FILE", "SUCCESS", {"file_id": file_id, "unshared_from": user_to_unshare})
+    return
+
 @app.post("/files/unshare-bulk", status_code=status.HTTP_204_NO_CONTENT)
 async def secure_bulk_unshare_file_entries(
     request: Request, unshare_request: FileBulkUnshareSchema,
@@ -310,13 +337,11 @@ async def list_files_shared_with_me(current_user: str = Depends(get_current_user
 
 # --- Admin Section ---
 
-# --- MODIFIED: Admin Stats Endpoint ---
 @app.get("/admin/stats")
 async def get_admin_stats(admin_user: dict = Depends(get_current_admin_user)):
     total_users = await user_collection.count_documents({})
     
     seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    # Find users who have a successful login in the last 7 days
     active_user_pipeline = [
         {"$match": {"action": "LOGIN", "status": "SUCCESS", "timestamp": {"$gte": seven_days_ago}}},
         {"$group": {"_id": "$username"}},
@@ -371,24 +396,63 @@ async def delete_user_by_admin(username: str, admin_user: dict = Depends(get_cur
     
     return
 
-# --- NEW: Admin Action Endpoint for Garbage Collection ---
+@app.post("/admin/files/{file_id}/re-shard")
+async def admin_re_shard_file(
+    file_id: str, 
+    new_params: dict,
+    admin_user: dict = Depends(get_current_admin_user)
+):
+    try:
+        obj_id = ObjectId(file_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file ID format")
+
+    file_doc = await file_collection.find_one({"_id": obj_id})
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    owner_doc = await user_collection.find_one({"username": file_doc["owner"]})
+    if not owner_doc:
+        raise HTTPException(status_code=404, detail="File owner not found")
+
+    new_n = new_params.get("n")
+    new_k = new_params.get("k")
+    owner_password = new_params.get("owner_password")
+    if not all([new_n, new_k, owner_password]):
+        raise HTTPException(status_code=400, detail="New 'n', 'k', and 'owner_password' parameters are required.")
+
+    if not verify_password(owner_password, owner_doc["hashed_password"]):
+        raise HTTPException(status_code=401, detail="The provided password for the file owner is incorrect.")
+
+    try:
+        # Call the corrected worker function
+        new_root_hash, new_encrypted_file_key = await re_shard_file(file_doc, owner_doc, new_n, new_k, owner_password)
+        
+        await file_collection.update_one(
+            {"_id": obj_id},
+            {"$set": {
+                "root_hash": new_root_hash,
+                "erasure": {"n": new_n, "k": new_k}
+            }}
+        )
+        
+        return {"message": "File re-sharded successfully", "new_root_hash": new_root_hash}
+    except Exception as e:
+        print(f"Re-sharding failed: {e}")
+        raise HTTPException(status_code=500, detail=f"An internal error occurred during re-sharding: {e}")
+
 @app.post("/admin/trigger-gc")
 async def trigger_gc_on_all_nodes(admin_user: dict = Depends(get_current_admin_user)):
     print("Admin triggered network-wide Garbage Collection.")
     
-    # 1. Get all active hashes from the database
     all_files = await file_collection.find({}).to_list(None)
     active_hashes = set()
     for file_doc in all_files:
         active_hashes.add(file_doc["root_hash"])
-        for shard_hash in file_doc.get("shards", []):
-            active_hashes.add(shard_hash)
     
     active_hashes_list = list(active_hashes)
-    print(f"Found {len(active_hashes_list)} total active hashes in the database.")
+    print(f"Found {len(active_hashes_list)} active root hashes in the database.")
 
-    # 2. Send the active hash list to each P2P node to trigger their GC
-    # NOTE: In a real system, these URLs would come from a service discovery mechanism.
     p2p_node_urls = [
         "http://p2p_node_0:8001",
         "http://p2p_node_1:8001",
@@ -408,3 +472,14 @@ async def trigger_gc_on_all_nodes(admin_user: dict = Depends(get_current_admin_u
     
     print("Garbage Collection cycle complete.")
     return results
+
+@app.get("/admin/users/{username}/files", response_model=List[FileResponseSchema])
+async def get_user_files_by_admin(username: str, admin_user: dict = Depends(get_current_admin_user)):
+    user = await user_collection.find_one({"username": username})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    files = await file_collection.find({"owner": username}).to_list(1000)
+    for file in files:
+        file["_id"] = str(file["_id"])
+    return files

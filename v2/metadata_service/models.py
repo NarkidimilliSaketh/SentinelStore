@@ -103,3 +103,5 @@ class UserPublicKeyResponse(BaseModel):
 class FileBulkUnshareSchema(BaseModel):
     file_ids: List[str]
     username: str
+
+

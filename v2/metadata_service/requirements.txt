@@ -2,9 +2,10 @@ fastapi
 uvicorn
 python-multipart
 motor
-passlib[bcrypt]
+passlib[argon2]
 python-jose[cryptography]
 python-dotenv
-pynacl
 python-dateutil
 httpx
+shamirs
+pynacl

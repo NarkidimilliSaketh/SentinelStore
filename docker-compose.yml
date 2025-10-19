@@ -4,7 +4,6 @@ networks:
   sentinelnet:
     driver: bridge
 
-# --- NEW: Define the persistent volumes ---
 volumes:
   p2p_storage_0:
   p2p_storage_1:
@@ -18,6 +17,20 @@ services:
       - "8000:8000"
     networks:
       - sentinelnet
+    environment:
+      - P2P_NODE_URLS=http://p2p_node_0:8001,http://p2p_node_1:8001,http://p2p_node_2:8001
+    depends_on:
+      p2p_node_0:
+        condition: service_healthy
+      p2p_node_1:
+        condition: service_healthy
+      p2p_node_2:
+        condition: service_healthy
+
+  # --- The AI Guardian Service is commented out until we build it ---
+  # ai_guardian:
+  #   build: ./v2/ai_guardian
+  #   ...
 
   p2p_node_0:
     build: ./v2/p2p_network
@@ -30,11 +43,15 @@ services:
       - NODE_PORT=8468
       - OWN_PUBLIC_URL=http://localhost:8001
       - OWN_INTERNAL_URL=http://p2p_node_0:8001
-    # --- NEW: Mount the persistent volume ---
     volumes:
       - p2p_storage_0:/storage
     networks:
       - sentinelnet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   p2p_node_1:
     build: ./v2/p2p_network
@@ -49,13 +66,18 @@ services:
       - BOOTSTRAP_PORT=8468
       - OWN_PUBLIC_URL=http://localhost:8002
       - OWN_INTERNAL_URL=http://p2p_node_1:8001
-    # --- NEW: Mount the persistent volume ---
     volumes:
       - p2p_storage_1:/storage
     networks:
       - sentinelnet
     depends_on:
-      - p2p_node_0
+      p2p_node_0:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   p2p_node_2:
     build: ./v2/p2p_network
@@ -70,13 +92,18 @@ services:
       - BOOTSTRAP_PORT=8468
       - OWN_PUBLIC_URL=http://localhost:8003
       - OWN_INTERNAL_URL=http://p2p_node_2:8001
-    # --- NEW: Mount the persistent volume ---
     volumes:
       - p2p_storage_2:/storage
     networks:
       - sentinelnet
     depends_on:
-      - p2p_node_0
+      p2p_node_0:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   frontend:
     build: ./v2/frontend
@@ -85,8 +112,16 @@ services:
       - "5173:5173"
     environment:
       - VITE_P2P_NODE_URLS=http://localhost:8001,http://localhost:8002,http://localhost:8003
+    # --- START OF CORRECTION ---
+    # The 'depends_on' block for the frontend was incorrectly indented.
+    # This is the correct YAML structure for multiple dependencies with conditions.
     depends_on:
-      - metadata_service
-      - p2p_node_0
-      - p2p_node_1
-      - p2p_node_2
+      metadata_service:
+        condition: service_started # metadata_service doesn't have a healthcheck, so we wait for it to start
+      p2p_node_0:
+        condition: service_healthy
+      p2p_node_1:
+        condition: service_healthy
+      p2p_node_2:
+        condition: service_healthy
+    # --- END OF CORRECTION ---
